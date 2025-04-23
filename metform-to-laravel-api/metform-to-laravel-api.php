@@ -3,7 +3,7 @@
  * Plugin Name:       MetForm to Laravel API Integration
  * Plugin URI:        https://example.com/plugins/the-basics/
  * Description:       Sends MetForm submission data to a specified Laravel API endpoint.
- * Version:           1.0.0
+ * Version:           1.0.1
  * Requires at least: 5.2
  * Requires PHP:      7.4
  * Author:            Your Name or Company
@@ -19,53 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-/**
- * Check if Action Scheduler is available.
- * Recommended: Add Action Scheduler as a plugin dependency or include it via Composer.
- */
-if ( ! function_exists( 'as_enqueue_async_action' ) ) {
-    // Log an error or display an admin notice if Action Scheduler is missing.
-    add_action( 'admin_notices', function() {
-        echo '<div class="notice notice-error"><p>';
-        echo esc_html__( 'MetForm to Laravel API Integration requires the Action Scheduler library to be active. Please install and activate Action Scheduler.', 'metform-laravel-api' );
-        echo '</p></div>';
-    });
-    // Optionally, disable the plugin's core functionality if AS is missing.
-    // For now, we'll just log and prevent the hook from running if AS isn't there.
-    mfla_log_message('Error: Action Scheduler library not found. Asynchronous processing disabled.');
-    // return; // Uncomment this if you want to completely stop if AS is missing
-}
-
-
-/**
- * Define constants if they are not already defined.
- * These should ideally be defined in wp-config.php for security.
- */
-if ( ! defined( 'METFORM_TARGET_FORM_ID' ) ) {
-    // IMPORTANT: Replace 'YOUR_METFORM_ID' with the actual ID or name of the form to target.
-    // You can often find this ID in the MetForm builder URL or shortcode.
-    define( 'METFORM_TARGET_FORM_ID', 'YOUR_METFORM_ID' );
-}
-if ( ! defined( 'LARAVEL_API_BASE_URL' ) ) {
-    define( 'LARAVEL_API_BASE_URL', 'http://127.0.0.1:8001/api/v1/' ); // Example, replace with actual
-}
-if ( ! defined( 'LARAVEL_API_LOGIN_ENDPOINT' ) ) {
-    define( 'LARAVEL_API_LOGIN_ENDPOINT', '/login' ); // Example, replace with actual
-}
-if ( ! defined( 'LARAVEL_API_CREATE_ENDPOINT' ) ) {
-    define( 'LARAVEL_API_CREATE_ENDPOINT', '/loan-applications' ); // Example, replace with actual
-}
-if ( ! defined( 'LARAVEL_API_USERNAME' ) ) {
-    define( 'LARAVEL_API_USERNAME', 'tu_usuario_api' ); // Example, replace with actual
-}
-if ( ! defined( 'LARAVEL_API_PASSWORD' ) ) {
-    define( 'LARAVEL_API_PASSWORD', 'tu_password_segura' ); // Example, replace with actual
-}
-// Optional: Endpoint to verify token status
- if ( ! defined( 'LARAVEL_API_STATUS_ENDPOINT' ) ) {
-     define( 'LARAVEL_API_STATUS_ENDPOINT', '/tokenStatus' );
- }
-
+// Action Scheduler dependency check removed. Using WP-Cron instead.
 
 /**
  * Hook into MetForm submission after data is stored.
@@ -85,22 +39,22 @@ function mfla_handle_metform_submission( $form_id, $form_data, $entry_data ) {
     }
 
     mfla_log_message( 'Handling submission for form ID/Name: ' . $form_id . '/' . $entry_data['form_name'] );
+    
+    // Schedule the API call to run asynchronously using WP-Cron
+    // Pass only the necessary data. Ensure the data is serializable.
+    $cron_args = array(
+        'form_submission_data' => $entry_data['form_data'] // Pass the structured form data
+    );
 
-    // Schedule the API call to run asynchronously using Action Scheduler
-    if ( function_exists( 'as_enqueue_async_action' ) ) {
-        // Pass only the necessary data. Avoid passing large objects if possible.
-        // Ensure the data is serializable.
-        $action_args = array(
-            'form_submission_data' => $entry_data['form_data'] // Pass the structured form data
-        );
-        as_enqueue_async_action( 'mfla_process_scheduled_submission_hook', $action_args, 'metform-laravel-api' );
-        mfla_log_message( 'Scheduled asynchronous action mfla_process_scheduled_submission_hook for form ' . $form_id );
+    // Schedule a single event to run as soon as possible.
+    // WP-Cron's timing depends on site traffic.
+    if ( ! wp_next_scheduled( 'mfla_process_scheduled_submission_hook', array( $cron_args ) ) ) {
+         wp_schedule_single_event( time(), 'mfla_process_scheduled_submission_hook', array( $cron_args ) );
+         mfla_log_message( 'Scheduled WP-Cron event mfla_process_scheduled_submission_hook for form ' . $form_id );
     } else {
-        // Fallback or error if Action Scheduler is missing (though checked above)
-        mfla_log_message( 'Error: Cannot schedule async action - Action Scheduler not available.' );
-        // Optionally, call synchronously as a fallback (not recommended):
-        // mfla_process_scheduled_submission( $entry_data['form_data'] );
+         mfla_log_message( 'WP-Cron event mfla_process_scheduled_submission_hook already scheduled for similar args. Skipping duplicate scheduling for form ' . $form_id );
     }
+
 }
 // Potential Hooks: metform_after_store_form_data, metform_after_entries_table_data
 // We'll use metform_after_store_form_data as it seems appropriate.
@@ -110,18 +64,20 @@ add_action( 'metform_after_store_form_data', 'mfla_handle_metform_submission', 1
 
 /**
  * Orchestrates sending the data to the Laravel API.
- * Action Scheduler hook callback. Orchestrates sending the data to the Laravel API.
+ * WP-Cron hook callback. Orchestrates sending the data to the Laravel API.
  *
- * @param array $form_submission_data Key-value pairs of submitted form data passed by Action Scheduler.
+ * @param array $cron_args Arguments passed by wp_schedule_single_event. Expects ['form_submission_data' => [...]].
  */
-function mfla_process_scheduled_submission( $form_submission_data ) {
-    mfla_log_message( '[Action Scheduler] Processing scheduled submission...' );
+function mfla_process_scheduled_submission( $cron_args ) {
+    mfla_log_message( '[WP-Cron] Processing scheduled submission...' );
 
-    // Basic check if data is present
-    if ( empty( $form_submission_data ) || ! is_array( $form_submission_data ) ) {
-        mfla_log_message( '[Action Scheduler] Error: Invalid or empty form data received in scheduled action.' );
+    // Extract the actual form data from the arguments passed by WP-Cron
+    if ( ! isset( $cron_args['form_submission_data'] ) || empty( $cron_args['form_submission_data'] ) || ! is_array( $cron_args['form_submission_data'] ) ) {
+        mfla_log_message( '[WP-Cron] Error: Invalid or empty form data received in scheduled action arguments.' );
+        mfla_log_message( '[WP-Cron] Received args: ' . print_r( $cron_args, true ) ); // Log received args for debugging
         return; // Stop processing if data is bad
     }
+    $form_submission_data = $cron_args['form_submission_data'];
 
     $token = mfla_get_laravel_api_token();
 
@@ -149,17 +105,17 @@ function mfla_process_scheduled_submission( $form_submission_data ) {
             $api_payload[ $api_field ] = sanitize_text_field( $form_submission_data[ $metform_field ] ); // Basic sanitization
         } else {
             // Optional: Log if a mapped field is missing, or set a default, or skip.
-             mfla_log_message( 'Warning: Mapped MetForm field "' . $metform_field . '" not found in submission data.' );
+             mfla_log_message( '[WP-Cron] Warning: Mapped MetForm field "' . $metform_field . '" not found in submission data.' );
         }
     }
 
     if ( empty( $api_payload ) ) {
-        mfla_log_message( 'Error: No data mapped for API payload. Aborting.' );
+        mfla_log_message( '[WP-Cron] Error: No data mapped for API payload. Aborting.' );
         return;
     }
 
-    mfla_log_message( 'Data mapped. Sending POST request to create endpoint.' );
-    mfla_log_message( 'Payload: ' . json_encode($api_payload) ); // Log the payload being sent
+    mfla_log_message( '[WP-Cron] Data mapped. Sending POST request to create endpoint.' );
+    mfla_log_message( '[WP-Cron] Payload: ' . json_encode($api_payload) ); // Log the payload being sent
 
     // --- API Call ---
     $api_url = trailingslashit( LARAVEL_API_BASE_URL ) . ltrim( LARAVEL_API_CREATE_ENDPOINT, '/' );
@@ -179,24 +135,24 @@ function mfla_process_scheduled_submission( $form_submission_data ) {
     // --- Handle Response ---
     if ( is_wp_error( $response ) ) {
         $error_message = $response->get_error_message();
-        mfla_log_message( 'WP Error during API call: ' . $error_message );
-        // TODO: Implement retry logic or admin notification for WP errors.
+        mfla_log_message( '[WP-Cron] WP Error during API call: ' . $error_message );
+        // TODO: Implement retry logic or admin notification for WP errors with WP-Cron (might need custom handling).
         return;
     }
 
     $response_code = wp_remote_retrieve_response_code( $response );
     $response_body = wp_remote_retrieve_body( $response );
 
-    mfla_log_message( 'API Response Code: ' . $response_code );
-    mfla_log_message( 'API Response Body: ' . $response_body );
+    mfla_log_message( '[WP-Cron] API Response Code: ' . $response_code );
+    mfla_log_message( '[WP-Cron] API Response Body: ' . $response_body );
 
     if ( $response_code >= 200 && $response_code < 300 ) {
         // Success (e.g., 200 OK, 201 Created)
-        mfla_log_message( 'Success: Data sent to Laravel API.' );
+        mfla_log_message( '[WP-Cron] Success: Data sent to Laravel API.' );
         // Optionally parse $response_body if needed.
     } elseif ( $response_code === 401 ) {
         // Unauthorized - Token likely expired or invalid. Attempt a single retry.
-        mfla_log_message( '[Action Scheduler] Error: API returned 401 Unauthorized. Invalidating token and attempting retry.' );
+        mfla_log_message( '[WP-Cron] Error: API returned 401 Unauthorized. Invalidating token and attempting retry.' );
 
         // Invalidate the stored token
         delete_transient( '_mfla_laravel_api_token' );
@@ -206,7 +162,7 @@ function mfla_process_scheduled_submission( $form_submission_data ) {
         $retry_token = mfla_get_laravel_api_token(); // This now attempts login
 
         if ( $retry_token ) {
-            mfla_log_message( '[Action Scheduler] Obtained new token. Retrying API call...' );
+            mfla_log_message( '[WP-Cron] Obtained new token. Retrying API call...' );
             // Prepare args again with the new token
             $retry_args = array(
                 'method'  => 'POST',
@@ -224,37 +180,37 @@ function mfla_process_scheduled_submission( $form_submission_data ) {
 
             if ( is_wp_error( $retry_response ) ) {
                 $retry_error_message = $retry_response->get_error_message();
-                mfla_log_message( '[Action Scheduler] WP Error during API call retry: ' . $retry_error_message );
+                mfla_log_message( '[WP-Cron] WP Error during API call retry: ' . $retry_error_message );
                 // Stop after retry failure
             } else {
                 $retry_response_code = wp_remote_retrieve_response_code( $retry_response );
                 $retry_response_body = wp_remote_retrieve_body( $retry_response );
-                mfla_log_message( '[Action Scheduler] Retry API Response Code: ' . $retry_response_code );
-                mfla_log_message( '[Action Scheduler] Retry API Response Body: ' . $retry_response_body );
+                mfla_log_message( '[WP-Cron] Retry API Response Code: ' . $retry_response_code );
+                mfla_log_message( '[WP-Cron] Retry API Response Body: ' . $retry_response_body );
 
                 if ( $retry_response_code >= 200 && $retry_response_code < 300 ) {
-                    mfla_log_message( '[Action Scheduler] Success: Data sent to Laravel API on retry.' );
+                    mfla_log_message( '[WP-Cron] Success: Data sent to Laravel API on retry.' );
                 } elseif ( $retry_response_code === 422 ) {
-                     mfla_log_message( '[Action Scheduler] Error: Retry API call returned 422 Unprocessable Entity (Validation Error). Details: ' . $retry_response_body );
+                     mfla_log_message( '[WP-Cron] Error: Retry API call returned 422 Unprocessable Entity (Validation Error). Details: ' . $retry_response_body );
                      // Log validation errors from retry
                 } else {
-                    mfla_log_message( '[Action Scheduler] Error: Retry API call failed with HTTP status ' . $retry_response_code . '. Body: ' . $retry_response_body );
+                    mfla_log_message( '[WP-Cron] Error: Retry API call failed with HTTP status ' . $retry_response_code . '. Body: ' . $retry_response_body );
                     // Log other errors from retry
                 }
             }
         } else {
-            mfla_log_message( '[Action Scheduler] Error: Failed to obtain a new token after 401. Aborting retry.' );
+            mfla_log_message( '[WP-Cron] Error: Failed to obtain a new token after 401. Aborting retry.' );
             // Stop if login failed after 401
         }
 
     } elseif ( $response_code === 422 ) {
         // Validation Error (from the first attempt)
-        mfla_log_message( '[Action Scheduler] Error: API returned 422 Unprocessable Entity (Validation Error) on first attempt. Details: ' . $response_body );
+        mfla_log_message( '[WP-Cron] Error: API returned 422 Unprocessable Entity (Validation Error) on first attempt. Details: ' . $response_body );
         // Log the specific validation errors from $response_body.
         // Consider notifying admin or storing the failed submission data for review.
     } else {
         // Other API errors (4xx, 5xx) from the first attempt
-        mfla_log_message( '[Action Scheduler] Error: API returned HTTP status ' . $response_code . ' on first attempt. Body: ' . $response_body );
+        mfla_log_message( '[WP-Cron] Error: API returned HTTP status ' . $response_code . ' on first attempt. Body: ' . $response_body );
         // Consider notifying admin.
     }
 }
@@ -375,31 +331,33 @@ function mfla_log_message( $message ) {
 }
 
 // Optional: Function to verify token with API status endpoint
-// function mfla_verify_token_with_api($token) {
-//     if (!defined('LARAVEL_API_STATUS_ENDPOINT')) {
-//         return true; // No endpoint defined, assume token is okay until it fails
-//     }
-//     $status_url = trailingslashit( LARAVEL_API_BASE_URL ) . ltrim( LARAVEL_API_STATUS_ENDPOINT, '/' );
-//     $args = array(
-//         'method'  => 'GET', // Or POST, depending on the API endpoint
-//         'headers' => array(
-//             'Authorization' => 'Bearer ' . $token,
-//             'Accept'        => 'application/json',
-//         ),
-//         'timeout' => 15,
-//     );
-//     $response = wp_remote_get( $status_url, $args ); // or wp_remote_post
-//     if (is_wp_error($response)) {
-//         mfla_log_message('WP Error during token status check: ' . $response->get_error_message());
-//         return false; // Treat error as potentially invalid token
-//     }
-//     $response_code = wp_remote_retrieve_response_code( $response );
-//     mfla_log_message('Token status check response code: ' . $response_code);
-//     return ($response_code >= 200 && $response_code < 300); // Assume 2xx means valid
-// }
+ function mfla_verify_token_with_api($token) {
+     if (!defined('LARAVEL_API_STATUS_ENDPOINT')) {
+         return true; // No endpoint defined, assume token is okay until it fails
+     }
+     $status_url = trailingslashit( LARAVEL_API_BASE_URL ) . ltrim( LARAVEL_API_STATUS_ENDPOINT, '/' );
+     $args = array(
+         'method'  => 'GET', // Or POST, depending on the API endpoint
+         'headers' => array(
+             'Authorization' => 'Bearer ' . $token,
+             'Accept'        => 'application/json',
+         ),
+         'timeout' => 15,
+     );
+     $response = wp_remote_get( $status_url, $args ); // or wp_remote_post
+     if (is_wp_error($response)) {
+         mfla_log_message('WP Error during token status check: ' . $response->get_error_message());
+         return false; // Treat error as potentially invalid token
+     }
+     $response_code = wp_remote_retrieve_response_code( $response );
+     mfla_log_message('Token status check response code: ' . $response_code);
+     return ($response_code >= 200 && $response_code < 300); // Assume 2xx means valid
+}
 
 /**
- * Hook the processing function to the Action Scheduler action.
+ * Hook the processing function to the WP-Cron action.
+ * Note: The number of arguments accepted by the callback (1) must match
+ * the number of arguments passed in wp_schedule_single_event's $args array.
  */
 add_action( 'mfla_process_scheduled_submission_hook', 'mfla_process_scheduled_submission', 10, 1 );
 
