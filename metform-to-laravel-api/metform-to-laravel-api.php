@@ -63,6 +63,86 @@ add_action( 'metform_after_store_form_data', 'mfla_handle_metform_submission', 1
 
 
 /**
+ * Helper function to convert common affirmative strings to boolean true.
+ * Handles "Sí", "Si", "Yes", "Accepted", "1". Case-insensitive for the first three.
+ *
+ * @param mixed $value The input value from the form.
+ * @return bool True if affirmative, false otherwise.
+ */
+function mfla_to_bool($value) {
+    if (is_bool($value)) {
+        return $value;
+    }
+    if (is_numeric($value)) {
+        return (int)$value === 1;
+    }
+    if (is_string($value)) {
+        // Normalize accents and case for comparison
+        $cleaned_value = strtolower(trim(str_replace(['á', 'é', 'í', 'ó', 'ú'], ['a', 'e', 'i', 'o', 'u'], $value)));
+        $affirmative = ['si', 'yes', 'accepted']; // 'sí' becomes 'si' after normalization
+        return in_array($cleaned_value, $affirmative, true);
+    }
+    return false;
+}
+
+/**
+ * Helper function to format a date string from 'd-m-Y' to 'Y-m-d'.
+ * Returns null if the input is empty or invalid.
+ *
+ * @param string|null $date_string The date string from MetForm.
+ * @return string|null The formatted date string 'Y-m-d' or null.
+ */
+function mfla_format_date($date_string) {
+    if (empty($date_string) || !is_string($date_string)) return null;
+    try {
+        // Try parsing d-m-Y first
+        $date = DateTime::createFromFormat('d-m-Y', trim($date_string));
+        // Check if the created date object, when formatted back, matches the original string.
+        // This validates that the input was strictly in 'd-m-Y' format.
+        if ($date && $date->format('d-m-Y') === trim($date_string)) {
+            return $date->format('Y-m-d');
+        }
+        // Optional: Try other common formats if needed (e.g., m/d/Y)
+        // $date = DateTime::createFromFormat('m/d/Y', trim($date_string));
+        // if ($date && $date->format('m/d/Y') === trim($date_string)) {
+        //     return $date->format('Y-m-d');
+        // }
+    } catch (Exception $e) {
+        // Log exception during date parsing
+        mfla_log_message("[WP-Cron] Warning: Exception while parsing date '$date_string'. Error: " . $e->getMessage());
+        return null;
+    }
+    // Log if format was not 'd-m-Y' after trying
+    mfla_log_message("[WP-Cron] Warning: Invalid or non-'d-m-Y' date format received: '$date_string'. Could not parse.");
+    return null; // Return null if format is invalid or parsing failed
+}
+
+/**
+ * Helper function to convert a string value to a numeric type (int or float).
+ * Removes common currency symbols and grouping separators.
+ * Returns null if conversion fails or input is empty.
+ *
+ * @param string|null $value The input string.
+ * @return int|float|null The numeric value or null.
+ */
+function mfla_to_numeric($value) {
+     if ($value === null || trim($value) === '') return null; // Handle null and empty strings
+     // Remove common currency symbols ($, €, etc.), spaces, and thousands separators (commas)
+     // Keep the decimal separator (dot) and negative sign
+     $cleaned = preg_replace('/[^\d.-]/', '', trim($value));
+
+     // Check if the cleaned string is a valid numeric representation
+     if (!is_numeric($cleaned)) {
+         // Log the original and cleaned values if conversion fails
+         mfla_log_message("[WP-Cron] Warning: Could not convert value to numeric after cleaning: Original='$value' -> Cleaned='$cleaned'");
+         return null;
+     }
+     // Convert to float if it contains a decimal point, otherwise to int
+     return strpos($cleaned, '.') !== false ? (float)$cleaned : (int)$cleaned;
+}
+
+
+/**
  * Orchestrates sending the data to the Laravel API.
  * WP-Cron hook callback. Orchestrates sending the data to the Laravel API.
  *
@@ -89,33 +169,265 @@ function mfla_process_scheduled_submission( $cron_args ) {
 
     mfla_log_message( 'Obtained API Token. Preparing data...' );
 
-    // --- Data Mapping ---
-    // IMPORTANT: Define the mapping from MetForm field names to Laravel API field names.
-    // This is a placeholder - you MUST customize this based on Fase 0 requirements.
-    $api_payload = array();
-    $field_map = array(
-        'mf-text-input-1' => 'nombre_api',       // Example: MetForm field 'mf-text-input-1' maps to 'nombre_api' in Laravel
-        'mf-email'        => 'correo_electronico', // Example: MetForm field 'mf-email' maps to 'correo_electronico'
-        'mf-textarea'     => 'mensaje_detalle',    // Example: MetForm field 'mf-textarea' maps to 'mensaje_detalle'
-        // Add all other necessary field mappings here...
-    );
+    // --- Data Mapping & Transformation ---
+    // Map MetForm fields to the nested structure expected by the Laravel API
+    // and apply necessary transformations (boolean, date, numeric).
 
-    foreach ( $field_map as $metform_field => $api_field ) {
-        if ( isset( $form_submission_data[ $metform_field ] ) ) {
-            $api_payload[ $api_field ] = sanitize_text_field( $form_submission_data[ $metform_field ] ); // Basic sanitization
-        } else {
-            // Optional: Log if a mapped field is missing, or set a default, or skip.
-             mfla_log_message( '[WP-Cron] Warning: Mapped MetForm field "' . $metform_field . '" not found in submission data.' );
+    $api_payload = [
+        'customer' => [
+            'details' => [
+                'phones' => [],
+                'addresses' => [],
+                'vehicles' => [],
+                'references' => [],
+            ],
+            'jobInfo' => [],
+            'company' => [
+                'phones' => [],
+                'addresses' => [],
+            ],
+        ],
+        'loanApplication' => [],
+    ];
+
+    $data = $form_submission_data; // Shorter alias for readability
+
+    // --- Helper function to safely get and sanitize data ---
+    // $key: MetForm field name
+    // $default: Default value if key not set
+    // $sanitize_callback: Sanitization function (e.g., 'sanitize_text_field', 'sanitize_email')
+    // $transform_callback: Transformation function (e.g., 'mfla_to_bool', 'mfla_format_date', 'mfla_to_numeric')
+    $get_value = function($key, $default = null, $sanitize_callback = 'sanitize_text_field', $transform_callback = null) use ($data) {
+        if (!isset($data[$key]) || trim($data[$key]) === '') {
+            return $default;
         }
+        $value = $data[$key];
+        if ($sanitize_callback && is_callable($sanitize_callback)) {
+             // Apply basic WP sanitization first if needed (careful with numeric/bool)
+             if ($sanitize_callback !== 'sanitize_email' && !is_numeric($value) && !is_bool($value)) {
+                 $value = call_user_func($sanitize_callback, $value);
+             } elseif ($sanitize_callback === 'sanitize_email') {
+                 $value = call_user_func($sanitize_callback, $value);
+             }
+             // For numeric/bool, sanitization might happen during transformation
+        }
+        if ($transform_callback && is_callable($transform_callback)) {
+            $value = call_user_func($transform_callback, $value);
+        }
+        return $value;
+    };
+
+    // --- Customer Details ---
+    $api_payload['customer']['details']['first_name'] = $get_value('mf-listing-fname');
+    $api_payload['customer']['details']['last_name'] = $get_value('apellido');
+    $api_payload['customer']['NID'] = $get_value('cedula', null, null, function($val) { return preg_replace('/[^\d]/', '', $val); }); // Keep only digits
+    $api_payload['customer']['details']['birthday'] = $get_value('fecha-nacimiento', null, null, 'mfla_format_date');
+    $api_payload['customer']['details']['email'] = $get_value('mf-email', null, 'sanitize_email');
+
+    // Map 'estado-civil' to API enum values
+    $marital_status_raw = $get_value('estado-civil', null, null, 'strtolower');
+    $marital_status_map = [
+        'soltero(a)' => 'single',
+        'casado(a)' => 'married',
+        'divorciado(a)' => 'divorced',
+        'viudo(a)' => 'widowed',
+        // Add other potential form values mapping to 'other' or specific enums
+    ];
+    $api_payload['customer']['details']['marital_status'] = $marital_status_map[$marital_status_raw] ?? 'other'; // Default to 'other' if no match
+
+    $api_payload['customer']['details']['nationality'] = $get_value('nacionalidad');
+
+    // Map 'tipo-vivienda' to API enum values
+    $housing_type_raw = $get_value('tipo-vivienda', null, null, 'strtolower');
+    $housing_type_map = [
+        'propia' => 'owned',
+        'alquilada' => 'rented',
+        'hipotecada' => 'mortgaged',
+        'familiar' => 'other', // Assuming 'familiar' maps to 'other'
+        // Add other potential form values
+    ];
+    $api_payload['customer']['details']['housing_type'] = $housing_type_map[$housing_type_raw] ?? 'other'; // Default to 'other' if no match
+
+    $api_payload['customer']['details']['move_in_date'] = $get_value('fecha-de-mudanza', null, null, 'mfla_format_date');
+
+    // --- Customer Phones ---
+    $phones = [];
+    $celular = $get_value('celular', null, null, function($val) { return preg_replace('/[^\d]/', '', $val); });
+    $telefono_casa = $get_value('telefono-casa', null, null, function($val) { return preg_replace('/[^\d]/', '', $val); });
+    if ($celular) {
+        $phones[] = ['number' => $celular, 'type' => 'mobile']; // Hardcoded type
+    }
+    if ($telefono_casa) {
+        $phones[] = ['number' => $telefono_casa, 'type' => 'home']; // Hardcoded type
+    }
+    if (!empty($phones)) {
+        $api_payload['customer']['details']['phones'] = $phones;
     }
 
-    if ( empty( $api_payload ) ) {
-        mfla_log_message( '[WP-Cron] Error: No data mapped for API payload. Aborting.' );
+    // --- Customer Addresses ---
+    $addresses = [];
+    $street = $get_value('direccion');
+    if ($street) {
+        // Assuming 'direccion' is just the street. Add other fields if available from MetForm.
+        // Add type 'home' as required by validation.
+        $addresses[] = [
+            'street' => $street,
+            'type'   => 'home',
+            // 'city' => $get_value('city_field'), 'state' => $get_value('state_field'), // etc.
+        ];
+    }
+    if (!empty($addresses)) {
+        $api_payload['customer']['details']['addresses'] = $addresses;
+    }
+
+    // --- Customer Vehicles ---
+    $vehicles = [];
+    $is_owned = $get_value('vehiculo-propio', null, null, 'mfla_to_bool');
+    $is_financed = $get_value('vehiculo-financiado', null, null, 'mfla_to_bool');
+    $brand = $get_value('vehiculo-marca');
+    $year = $get_value('vehiculo-anno', null, null, 'mfla_to_numeric');
+    // Add vehicle entry only if at least one vehicle field is present and non-null after processing
+    if ($is_owned !== null || $is_financed !== null || $brand !== null || $year !== null) {
+        $vehicles[] = [
+            'is_owned' => $is_owned,
+            'is_financed' => $is_financed,
+            'brand' => $brand,
+            'year' => $year,
+        ];
+    }
+    if (!empty($vehicles)) {
+        $api_payload['customer']['details']['vehicles'] = $vehicles;
+    }
+
+    // --- Customer References ---
+    $references = [];
+    // Reference 1
+    $ref1_name = $get_value('nombre-referencia-1');
+    if ($ref1_name) {
+        $references[] = [
+            'name' => $ref1_name,
+            'occupation' => $get_value('ocupacion-referencia-1'),
+            'relationship' => $get_value('parentesco-referencia-1'),
+            'phone' => null, // Phone not in example mapping for ref 1
+        ];
+    }
+    // Reference 2
+    $ref2_name = $get_value('nombre-referencia-2');
+    if ($ref2_name) {
+        $references[] = [
+            'name' => $ref2_name,
+            'occupation' => $get_value('ocupacion-referencia-2'),
+            'relationship' => $get_value('parentesco-referencia-2'),
+            'phone' => null, // Phone not in example mapping for ref 2
+        ];
+    }
+    // Spouse/Conyugue as Reference 3 (Assumption based on mapping file structure)
+    $spouse_name = $get_value('conyugue');
+    if ($spouse_name) {
+        $references[] = [
+            'name' => $spouse_name,
+            'phone' => $get_value('celular-conyugue', null, null, function($val) { return preg_replace('/[^\d]/', '', $val); }),
+            'relationship' => 'spouse', // Hardcoded assumption, confirm if API expects this or 'wife'/'husband' etc.
+            'occupation' => null, // Not provided in form
+        ];
+    }
+    // Assign references directly under 'customer' as per validation rules
+    if (!empty($references)) {
+        $api_payload['customer']['references'] = $references;
+    }
+
+    // --- Job Info ---
+    $api_payload['customer']['jobInfo']['is_self_employed'] = $get_value('mf-switch', null, null, 'mfla_to_bool'); // Assuming mf-switch maps here
+    $api_payload['customer']['jobInfo']['role'] = $get_value('ocupacion');
+    $api_payload['customer']['jobInfo']['start_date'] = $get_value('laborando-desde', null, null, 'mfla_format_date');
+    $api_payload['customer']['jobInfo']['salary'] = $get_value('sueldo-mensual', null, null, 'mfla_to_numeric');
+    $api_payload['customer']['jobInfo']['other_income'] = $get_value('otros-ingresos', null, null, 'mfla_to_numeric');
+    $api_payload['customer']['jobInfo']['other_incomes_source'] = $get_value('descripcion-otros-ingresos');
+    $api_payload['customer']['jobInfo']['supervisor_name'] = $get_value('supervisor');
+
+    // --- Company Info ---
+    // Only include company info if the person is *not* self-employed (assuming is_self_employed maps correctly)
+    // Or always include if provided? Let's always include if name is present.
+    $company_name = $get_value('nombre-empresa');
+    if ($company_name) {
+        $api_payload['customer']['company']['name'] = $company_name;
+        // Company Phones
+        $company_phones = [];
+        $company_phone_num = $get_value('telefono-empresa', null, null, function($val) { return preg_replace('/[^\d]/', '', $val); });
+        if ($company_phone_num) {
+            $company_phones[] = ['number' => $company_phone_num, 'type' => 'work']; // Hardcoded type
+        }
+        if (!empty($company_phones)) {
+            $api_payload['customer']['company']['phones'] = $company_phones;
+        }
+        // Company Addresses
+        $company_addresses = [];
+        $company_street = $get_value('direccion-empresa');
+        if ($company_street) {
+            // Add type 'work' as required by validation/context.
+            $company_addresses[] = [
+                'street' => $company_street,
+                'type'   => 'work',
+                // 'city' => $get_value('company_city_field'), // etc.
+            ];
+        }
+        if (!empty($company_addresses)) {
+            $api_payload['customer']['company']['addresses'] = $company_addresses;
+        }
+    } else {
+        // If no company name, ensure the company object is empty or null if required by API
+         unset($api_payload['customer']['company']); // Or set to null/empty array based on API spec
+    }
+
+
+    // --- Loan Application Details ---
+    // Map 'aceptacion-de-condiciones' to top-level 'terms' field with value 'accepted' if true
+    $terms_accepted = $get_value('aceptacion-de-condiciones', false, null, 'mfla_to_bool');
+    if ($terms_accepted === true) {
+        $api_payload['terms'] = 'accepted';
+    }
+    // Add other loan application fields if they exist in the form and API spec
+    // $api_payload['loanApplication']['amount'] = $get_value('loan-amount', null, null, 'mfla_to_numeric');
+    // $api_payload['loanApplication']['purpose'] = $get_value('loan-purpose');
+
+
+    // --- End of Mapping Logic ---
+
+     // Recursively remove null values from the payload, as the API might not expect them.
+     // Be cautious if the API explicitly requires null for certain fields.
+     $array_filter_recursive = function (&$array) use (&$array_filter_recursive) {
+         foreach ($array as $key => &$value) {
+             if (is_array($value)) {
+                 $value = $array_filter_recursive($value);
+             }
+             if ($value === null /* || $value === [] || $value === '' */) { // Adjust condition based on API needs
+                 unset($array[$key]);
+             }
+         }
+         return $array; // Return the modified array
+     };
+
+     $api_payload = $array_filter_recursive($api_payload);
+
+
+    // Basic check: Ensure customer NID is present after filtering, as it's often crucial
+    if ( empty( $api_payload['customer']['NID'] ) ) {
+         mfla_log_message( '[WP-Cron] Error: Customer NID (cedula) is missing, empty, or invalid in the submission data after processing. Aborting.' );
+         mfla_log_message( '[WP-Cron] Original NID value: ' . (isset($data['cedula']) ? $data['cedula'] : 'Not Set') );
+         mfla_log_message( '[WP-Cron] Payload before aborting: ' . json_encode($api_payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) );
+         return; // Stop processing if essential data is missing
+    }
+
+    // Check if the payload is fundamentally empty after filtering (e.g., only contains empty nested structures)
+    if ( empty( $api_payload['customer'] ) && empty( $api_payload['loanApplication'] ) ) {
+        mfla_log_message( '[WP-Cron] Error: Payload is effectively empty after mapping and filtering. Aborting.' );
+        mfla_log_message( '[WP-Cron] Original form data: ' . print_r($data, true) );
         return;
     }
 
-    mfla_log_message( '[WP-Cron] Data mapped. Sending POST request to create endpoint.' );
-    mfla_log_message( '[WP-Cron] Payload: ' . json_encode($api_payload) ); // Log the payload being sent
+    mfla_log_message( '[WP-Cron] Data mapped and transformed. Sending POST request to create endpoint.' );
+    // Use JSON_PRETTY_PRINT for easier debugging in logs. Add JSON_UNESCAPED_UNICODE for names/addresses.
+    mfla_log_message( '[WP-Cron] Payload: ' . json_encode($api_payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) );
 
     // --- API Call ---
     $api_url = trailingslashit( LARAVEL_API_BASE_URL ) . ltrim( LARAVEL_API_CREATE_ENDPOINT, '/' );
