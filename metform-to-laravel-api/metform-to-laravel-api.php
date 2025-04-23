@@ -47,7 +47,7 @@ function mfla_load_action_scheduler() {
     }
 }
 // Hook the loader function to run early during WordPress initialization. Priority 5 is quite early.
-add_action( 'plugins_loaded', 'mfla_load_action_scheduler', 5 );
+add_action( 'init', 'mfla_load_action_scheduler', 10 );
 
 
 /**
@@ -235,14 +235,15 @@ function mfla_to_numeric($value)
       return; // Cannot proceed without API URL details
   }
 
-  // Extract the actual form data from the arguments passed by Action Scheduler.
-  // Action Scheduler passes arguments directly.
-  if (! isset($action_args['form_submission_data']) || empty($action_args['form_submission_data']) || ! is_array($action_args['form_submission_data'])) {
-    mfla_log_message('[ActionScheduler] Error: Invalid or empty form data received in scheduled action arguments.');
-    mfla_log_message('[ActionScheduler] Received args: ' . print_r($action_args, true)); // Log received args for debugging
-    return; // Stop processing if data is bad
+  // The form data is passed directly as the action arguments.
+  // Check if the received arguments are empty or not an array.
+  if (empty($action_args) || !is_array($action_args)) {
+      mfla_log_message('[ActionScheduler] Error: Invalid or empty form data received in scheduled action arguments (expected an array).');
+      mfla_log_message('[ActionScheduler] Received args: ' . print_r($action_args, true)); // Log received args for debugging
+      return; // Stop processing if data is bad
   }
-  $form_submission_data = $action_args['form_submission_data'];
+  // Use the action arguments directly as the form submission data.
+  $form_submission_data = $action_args;
 
   $token = mfla_get_laravel_api_token();
 
@@ -263,17 +264,18 @@ function mfla_to_numeric($value)
       'details' => [
         'phones' => [],
         'addresses' => [],
-        'vehicles' => [],
-        // References moved directly under 'customer' based on previous logic
       ],
       'jobInfo' => [],
       'company' => [
         'phones' => [],
         'addresses' => [],
       ],
+      'vehicles' => [],
       'references' => [], // Initialize references array here
     ],
-    'loanApplication' => [],
+      // Add loan application fields if needed
+    'details' => [], // Placeholder for loan application details
+ // Placeholder for terms acceptance
   ];
 
   $data = $form_submission_data; // Shorter alias for readability
@@ -389,7 +391,7 @@ function mfla_to_numeric($value)
     ];
   }
   if (!empty($vehicles)) {
-    $api_payload['customer']['details']['vehicles'] = $vehicles;
+    $api_payload['customer']['vehicles'] = $vehicles;
   }
 
   // --- Customer References ---
@@ -403,7 +405,7 @@ function mfla_to_numeric($value)
   if ($spouse_name || $spouse_phone) { // Add if at least name or phone exists
     $references[] = [
       'name' => $spouse_name,
-      'phone' => $spouse_phone,
+      'phone_number' => $spouse_phone,
       'relationship' => 'spouse', // Hardcoded assumption
       'occupation' => null, // Not provided in form
     ];
@@ -416,7 +418,7 @@ function mfla_to_numeric($value)
       'name' => $ref1_name,
       'occupation' => $get_value('ocupacion-referencia-1'),
       'relationship' => $get_value('parentesco-referencia-1'),
-      'phone' => null, // Phone not in example mapping for ref 1
+      'phone_number' => null, // Phone not in example mapping for ref 1
     ];
   }
   // Reference 2
@@ -426,7 +428,7 @@ function mfla_to_numeric($value)
       'name' => $ref2_name,
       'occupation' => $get_value('ocupacion-referencia-2'),
       'relationship' => $get_value('parentesco-referencia-2'),
-      'phone' => null, // Phone not in example mapping for ref 2
+      'phone_number' => null, // Phone not in example mapping for ref 2
     ];
   }
 
@@ -440,7 +442,7 @@ function mfla_to_numeric($value)
   $api_payload['customer']['jobInfo']['role'] = $get_value('ocupacion');
   $api_payload['customer']['jobInfo']['start_date'] = $get_value('laborando-desde', null, null, 'mfla_format_date');
   $api_payload['customer']['jobInfo']['salary'] = $get_value('sueldo-mensual', null, null, 'mfla_to_numeric');
-  $api_payload['customer']['jobInfo']['other_income'] = $get_value('otros-ingresos', null, null, 'mfla_to_numeric');
+  $api_payload['customer']['jobInfo']['other_incomes'] = $get_value('otros-ingresos', null, null, 'mfla_to_numeric');
   $api_payload['customer']['jobInfo']['other_incomes_source'] = $get_value('descripcion-otros-ingresos');
   $api_payload['customer']['jobInfo']['supervisor_name'] = $get_value('supervisor');
 
@@ -480,14 +482,20 @@ function mfla_to_numeric($value)
 
 
   // --- Loan Application Details ---
-  // Map 'aceptacion-de-condiciones' to top-level 'terms' field with value 'accepted' if true
-  $terms_accepted = $get_value('aceptacion-de-condiciones', false, null, 'mfla_to_bool');
-  if ($terms_accepted === true) {
-    $api_payload['terms'] = 'accepted';
-  }
+  // Map 'aceptacion-de-condiciones' to top-level 'terms' field.
+  // Always include the 'terms' field. Send boolean true if accepted, false otherwise.
+  $terms_accepted_bool = $get_value('aceptacion-de-condiciones', false, null, 'mfla_to_bool');
+  $api_payload['terms'] = $terms_accepted_bool; // Send boolean true or false
+
   // Add other loan application fields if they exist in the form and API spec
-  // $api_payload['loanApplication']['amount'] = $get_value('loan-amount', null, null, 'mfla_to_numeric');
-  // $api_payload['loanApplication']['purpose'] = $get_value('loan-purpose');
+  // Note: These fields (amount, term, rate, frequency, purpose) are not present in the provided form data.
+  // The API validation errors indicate they are required. Sending default values might still cause errors.
+  // Ideally, the form should be updated to include these fields.
+   $api_payload['details']['amount'] = 0; // Default value, replace with actual field if available
+   $api_payload['details']['term'] = 0; // Default value, replace with actual field if available
+   $api_payload['details']['rate'] = 0; // Default value, replace with actual field if available
+   $api_payload['details']['frequency'] = 'monthly'; // Default value, replace with actual field if available
+   $api_payload['details']['purpose'] = null; // Default value, replace with actual field if available
 
 
   // --- End of Mapping Logic ---
@@ -648,6 +656,7 @@ function mfla_login_to_laravel_api()
   $login_endpoint = defined('LARAVEL_API_LOGIN_ENDPOINT') ? LARAVEL_API_LOGIN_ENDPOINT : null;
   $username = defined('LARAVEL_API_USERNAME') ? LARAVEL_API_USERNAME : '';
   $password = defined('LARAVEL_API_PASSWORD') ? LARAVEL_API_PASSWORD : '';
+  mfla_log_message('[ActionScheduler] Using username: ' . $username . ' and password: ' . $password);
 
   if (!$api_base_url || !$login_endpoint) {
       mfla_log_message('[ActionScheduler] Error: LARAVEL_API_BASE_URL or LARAVEL_API_LOGIN_ENDPOINT constants are not defined.');
@@ -668,7 +677,7 @@ function mfla_login_to_laravel_api()
     ),
     'body'    => json_encode(array(
       // Adjust field names if Laravel expects different ones (e.g., 'email')
-      'username' => $username,
+      'email' => $username,
       'password' => $password,
     )),
     'timeout' => 20,
