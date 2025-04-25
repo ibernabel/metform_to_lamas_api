@@ -4,7 +4,7 @@
  * Plugin Name:       MetForm to Laravel API Integration
  * Plugin URI:        https://example.com/plugins/the-basics/
  * Description:       Sends MetForm submission data to a specified Laravel API endpoint using Action Scheduler.
- * Version:           1.1.0
+ * Version:           1.1.2
  * Requires at least: 5.2
  * Requires PHP:      7.4
  * Author:            Your Name or Company
@@ -28,7 +28,7 @@ if (! defined('ABSPATH')) {
 function mfla_load_action_scheduler() {
     // Check if Action Scheduler is already loaded (e.g., by another plugin like WooCommerce)
     if ( function_exists('as_schedule_single_action') ) {
-        mfla_log_message('Action Scheduler already loaded by another plugin.');
+        // mfla_log_message('Action Scheduler already loaded by another plugin.'); // Commented out to reduce log spam
         return; // Already loaded, do nothing.
     }
 
@@ -312,6 +312,7 @@ function mfla_to_numeric($value)
   $api_payload['customer']['NID'] = $get_value('cedula', null, null, function ($val) {
     return preg_replace('/[^\d]/', '', (string)$val); // Keep only digits
   });
+  $api_payload['customer']['lead_channel'] = get_site_url(null, '', 'http');
   $api_payload['customer']['details']['birthday'] = $get_value('fecha-nacimiento', null, null, 'mfla_format_date');
   $api_payload['customer']['details']['email'] = $get_value('mf-email', null, 'sanitize_email');
 
@@ -438,7 +439,7 @@ function mfla_to_numeric($value)
   }
 
   // --- Job Info ---
-  $api_payload['customer']['jobInfo']['is_self_employed'] = $get_value('mf-switch', null, null, 'mfla_to_bool'); // Assuming mf-switch maps here
+  $api_payload['customer']['jobInfo']['is_self_employed'] = $get_value('mf-switch', false, null, 'mfla_to_bool');
   $api_payload['customer']['jobInfo']['role'] = $get_value('ocupacion');
   $api_payload['customer']['jobInfo']['start_date'] = $get_value('laborando-desde', null, null, 'mfla_format_date');
   $api_payload['customer']['jobInfo']['salary'] = $get_value('sueldo-mensual', null, null, 'mfla_to_numeric');
