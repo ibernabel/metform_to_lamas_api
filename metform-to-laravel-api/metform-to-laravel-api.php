@@ -4,7 +4,7 @@
  * Plugin Name:       MetForm to Laravel API Integration
  * Plugin URI:        https://example.com/plugins/the-basics/
  * Description:       Sends MetForm submission data to a specified Laravel API endpoint using Action Scheduler.
- * Version:           1.1.2
+ * Version:           1.2.0
  * Requires at least: 5.2
  * Requires PHP:      7.4
  * Author:            Your Name or Company
@@ -228,10 +228,10 @@ function mfla_to_numeric($value)
 
   // IMPORTANT: Define API constants in wp-config.php or elsewhere appropriate.
   $api_base_url = defined('LARAVEL_API_BASE_URL') ? LARAVEL_API_BASE_URL : null;
-  $api_create_endpoint = defined('LARAVEL_API_CREATE_ENDPOINT') ? LARAVEL_API_CREATE_ENDPOINT : null;
+  $api_create_endpoint = defined('LARAVEL_API_CREATE_CUSTOMER_ENDPOINT') ? LARAVEL_API_CREATE_CUSTOMER_ENDPOINT : null;
 
   if (!$api_base_url || !$api_create_endpoint) {
-      mfla_log_message('[ActionScheduler] Error: LARAVEL_API_BASE_URL or LARAVEL_API_CREATE_ENDPOINT constants are not defined. Aborting.');
+      mfla_log_message('[ActionScheduler] Error: LARAVEL_API_BASE_URL or LARAVEL_API_CREATE_CUSTOMER_ENDPOINT constants are not defined. Aborting.');
       return; // Cannot proceed without API URL details
   }
 
@@ -271,7 +271,9 @@ function mfla_to_numeric($value)
         'addresses' => [],
       ],
       'vehicles' => [],
-      'references' => [], // Initialize references array here
+      'references' => [
+        'phones' => [],
+      ], // Initialize references array here
     ],
       // Add loan application fields if needed
     'details' => [], // Placeholder for loan application details
@@ -398,17 +400,22 @@ function mfla_to_numeric($value)
   // --- Customer References ---
   $references = [];
 
-  // Reference 0 (Spouse/Conyugue)
-  $spouse_name = $get_value('conyugue');
-  $spouse_phone = $get_value('celular-conyugue', null, null, function ($val) {
+  // Reference 0 (household_member/Conyugue)
+  $household_member_name = $get_value('conyugue');
+  $household_member_phone = $get_value('celular-conyugue', null, null, function ($val) {
       return preg_replace('/[^\d]/', '', (string)$val);
   });
-  if ($spouse_name || $spouse_phone) { // Add if at least name or phone exists
+  if ($household_member_name || $household_member_phone) { // Add if at least name or phone exists
     $references[] = [
-      'name' => $spouse_name,
-      'phone_number' => $spouse_phone,
-      'relationship' => 'spouse', // Hardcoded assumption
+      'name' => $household_member_name,
+      'relationship' => 'household_member', // Hardcoded assumption
       'occupation' => null, // Not provided in form
+      'phones' => $household_member_phone ? [
+        [
+          'number' => $household_member_phone,
+          'type' => 'mobile', // Hardcoded type
+        ],
+      ] : null,
     ];
   }
 
@@ -419,7 +426,7 @@ function mfla_to_numeric($value)
       'name' => $ref1_name,
       'occupation' => $get_value('ocupacion-referencia-1'),
       'relationship' => $get_value('parentesco-referencia-1'),
-      'phone_number' => null, // Phone not in example mapping for ref 1
+      'phones' => null, // Phone not in example mapping for ref 1
     ];
   }
   // Reference 2
@@ -429,7 +436,7 @@ function mfla_to_numeric($value)
       'name' => $ref2_name,
       'occupation' => $get_value('ocupacion-referencia-2'),
       'relationship' => $get_value('parentesco-referencia-2'),
-      'phone_number' => null, // Phone not in example mapping for ref 2
+      'phones' => null, // Phone not in example mapping for ref 2
     ];
   }
 
@@ -747,7 +754,7 @@ function mfla_verify_token_with_api($token)
 {
   // IMPORTANT: Define API constants in wp-config.php or elsewhere appropriate.
   $api_base_url = defined('LARAVEL_API_BASE_URL') ? LARAVEL_API_BASE_URL : null;
-  $status_endpoint = defined('LARAVEL_API_STATUS_ENDPOINT') ? LARAVEL_API_STATUS_ENDPOINT : null;
+  $status_endpoint = defined('LARAVEL_API_TOKEN_STATUS_ENDPOINT') ? LARAVEL_API_TOKEN_STATUS_ENDPOINT : null;
 
   if (!$api_base_url || !$status_endpoint) {
     // If status endpoint isn't configured, assume token is okay until it fails in a real request.
