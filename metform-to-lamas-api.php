@@ -1,17 +1,17 @@
 <?php
 
 /**
- * Plugin Name:       MetForm to Laravel API Integration
- * Plugin URI:        https://example.com/plugins/the-basics/
+ * Plugin Name:       MetForm to Lamas API Integration
+ * Plugin URI:        https://github.com/ibernabel/metform_to_lamas_api
  * Description:       Sends MetForm submission data to specified Laravel API endpoints using Action Scheduler. Handles different logic based on form ID.
  * Version:           1.3.0
  * Requires at least: 5.2
  * Requires PHP:      7.4
- * Author:            Your Name or Company
- * Author URI:        https://example.com/
+ * Author:            Idequel Bernabel
+ * Author URI:        https://github.com/ibernabel/
  * License:           GPL v2 or later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
- * Text Domain:       metform-laravel-api
+ * Text Domain:       metform-lamas-api
  * Domain Path:       /languages
  */
 
