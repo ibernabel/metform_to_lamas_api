@@ -56,10 +56,10 @@ function mfla_handle_metform_submission($form_id, $form_data, $entry_data)
 {
   // {{Test form data for debugging}}
 
-  echo $form_id;
-  echo "<br><br>";
-  print_r($form_data); // Use print_r for arrays
-  echo "<br><br>";
+  //echo $form_id;
+  //echo "<br><br>";
+  //print_r($form_data); // Use print_r for arrays
+  //echo "<br><br>";
 
   // end {{Test form data for debugging}}
 
