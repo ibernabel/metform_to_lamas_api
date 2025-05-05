@@ -4,7 +4,7 @@
  * Plugin Name:       MetForm to Lamas API Integration
  * Plugin URI:        https://github.com/ibernabel/metform_to_lamas_api
  * Description:       Sends MetForm submission data to specified Laravel API endpoints using Action Scheduler. Handles different logic based on form ID.
- * Version:           1.3.3
+ * Version:           1.3.4
  * Requires at least: 5.2
  * Requires PHP:      8.0
  * Author:            Idequel Bernabel
@@ -409,18 +409,18 @@ function _mfla_process_full_customer_submission($form_submission_data)
   if (!empty($addresses)) $api_payload['customer']['details']['addresses'] = $addresses;
 
   // Customer Vehicle
-  $vehicle = [];
   $vehicle_data = [];
   $vehicle_data['is_owned'] = $get_value('vehiculo-propio', null, null, 'mfla_to_bool');
   $vehicle_data['is_financed'] = $get_value('vehiculo-financiado', null, null, 'mfla_to_bool');
   $vehicle_data['vehicle_brand'] = $get_value('vehiculo-marca');
   $vehicle_data['vehicle_year'] = $get_value('vehiculo-anno', null, null, 'mfla_to_numeric');
-  if ($vehicle_data['vehicle_brand'] !== null || $vehicle_data['vehicle_ year'] !== null || $vehicle_data['is_owned'] !== null || $vehicle_data['is_financed'] !== null) {
-    $vehicle[] = array_filter($vehicle_data, function ($value) {
-      return $value !== null;
-    });
+  // Check if any vehicle data is present before adding to payload
+  if ($vehicle_data['is_owned'] !== null || $vehicle_data['is_financed'] !== null || $vehicle_data['vehicle_brand'] !== null || $vehicle_data['vehicle_year'] !== null) {
+      // Assign the filtered data as an object directly
+      $api_payload['customer']['vehicle'] = array_filter($vehicle_data, function ($value) {
+          return $value !== null;
+      });
   }
-  if (!empty($vehicle)) $api_payload['customer']['vehicle'] = $vehicle;
 
   // Customer References
   $references = [];
