@@ -6,7 +6,7 @@
  * Description:       Sends MetForm submission data to specified Laravel API endpoints using Action Scheduler. Handles different logic based on form ID.
  * Version:           1.3.0
  * Requires at least: 5.2
- * Requires PHP:      7.4
+ * Requires PHP:      8.0
  * Author:            Idequel Bernabel
  * Author URI:        https://github.com/ibernabel/
  * License:           GPL v2 or later
