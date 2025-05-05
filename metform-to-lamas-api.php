@@ -4,7 +4,7 @@
  * Plugin Name:       MetForm to Lamas API Integration
  * Plugin URI:        https://github.com/ibernabel/metform_to_lamas_api
  * Description:       Sends MetForm submission data to specified Laravel API endpoints using Action Scheduler. Handles different logic based on form ID.
- * Version:           1.3.0
+ * Version:           1.3.1
  * Requires at least: 5.2
  * Requires PHP:      8.0
  * Author:            Idequel Bernabel
@@ -871,9 +871,25 @@ function mfla_get_laravel_api_token()
 
   if ($token && $expiry_timestamp && ($expiry_timestamp > ($current_timestamp + $buffer))) {
     // mfla_log_message('[ActionScheduler][Auth] Using existing valid API token.'); // Reduce log noise
-    // Optional: Verify token status if needed
-    // if (defined('LARAVEL_API_TOKEN_STATUS_ENDPOINT') && !mfla_verify_token_with_api($token)) { ... }
-    return $token;
+
+    $is_token_valid_with_api = true; // Assume valid unless checked and failed
+    if (defined('LARAVEL_API_TOKEN_STATUS_ENDPOINT')) {
+      mfla_log_message('[ActionScheduler][Auth] Verifying existing token with API status endpoint.');
+      if (!mfla_verify_token_with_api($token)) {
+        mfla_log_message('[ActionScheduler][Auth] Existing token failed API verification. Invalidating.');
+        delete_transient('_mfla_laravel_api_token');
+        delete_transient('_mfla_laravel_api_token_expiry');
+        $is_token_valid_with_api = false; // Mark as invalid
+      } else {
+         mfla_log_message('[ActionScheduler][Auth] Existing token passed API verification.');
+      }
+    }
+
+    // If token was valid by timestamp AND passed/skipped API verification, return it
+    if ($is_token_valid_with_api) {
+        return $token;
+    }
+    // If token was valid by timestamp but failed API verification, fall through to login attempt
   }
 
   mfla_log_message('[ActionScheduler][Auth] No valid token found or token expired. Attempting API login.');
