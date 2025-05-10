@@ -4,7 +4,7 @@
  * Plugin Name:       MetForm to Lamas API Integration
  * Plugin URI:        https://github.com/ibernabel/metform_to_lamas_api
  * Description:       Sends MetForm submission data to specified Laravel API endpoints using Action Scheduler. Handles different logic based on form ID.
- * Version:           1.3.4
+ * Version:           1.3.5
  * Requires at least: 5.2
  * Requires PHP:      8.0
  * Author:            Idequel Bernabel
@@ -393,6 +393,7 @@ function _mfla_process_full_customer_submission($form_submission_data)
   $housing_possession_type_map = ['propia' => 'owned', 'alquilada' => 'rented', 'hipotecada' => 'mortgaged', 'familiar' => 'other'];
   $api_payload['customer']['details']['housing_possession_type'] = $housing_possession_type_map[$housing_possession_type_raw] ?? 'other';
   $api_payload['customer']['details']['move_in_date'] = $get_value('fecha-de-mudanza', null, null, 'mfla_format_date');
+  $api_payload['customer']['details']['mode_of_transport'] = $get_value('medio-transporte');
 
   // Customer Phones
   $phones = [];
